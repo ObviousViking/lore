@@ -102,7 +102,7 @@ def step_login(cfg):
     exe_path = depot_downloader.find_exe()
     if not exe_path:
         log.info("DepotDownloader.exe not found. This build is missing a file.")
-        log.info("From source, run build.ps1 once first (see Development in the README).")
+        log.info("From source, run build.ps1 once first (see DEVELOPMENT.md).")
         sys.exit(1)
     depot_downloader.ensure_license_extracted()
 
