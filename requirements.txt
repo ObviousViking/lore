@@ -1,0 +1,5 @@
+# Runtime: stdlib only. pycryptodomex is optional - it recovers file names from newer encrypted
+# Epic manifests (hashes are collected either way) - and is bundled into the released exe.
+pycryptodomex
+# Build
+pyinstaller

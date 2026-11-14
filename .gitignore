@@ -1,0 +1,30 @@
+# Build output
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# DepotDownloader source, cloned by build.ps1
+tools/
+
+# Runtime data - never commit (hashes, login sessions, Steam API key)
+*.sqlite
+*.sqlite-journal
+*.db
+*.db-journal
+config.json
+steam_config.json
+manifests/
+manifests-scratch/
+*hashes_*.csv
+steam_log_*.txt
+DepotDownloader-LICENSE.txt
+
+# Editor / OS
+.vscode/
+.idea/
+.vs/
+.DS_Store
+Thumbs.db
+desktop.ini
