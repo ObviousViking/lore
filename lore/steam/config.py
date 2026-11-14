@@ -1,29 +1,23 @@
-"""Steam settings in steam_config.json next to the exe (repo root from source): the Steam Web API
-key, the resolved SteamID64 and the Steam login username, so they're only asked for once. The API
-key is low-privilege and the rest is public, so a plain file is enough.
+"""Steam settings in lore_files/steam_config.json: Web API key, SteamID64 and login username, so
+they're only asked for once. The API key is low privilege and the rest is public, so a plain file
+is fine.
 """
 
 import json
 import os
-import sys
+
+from ..paths import app_dir, files_dir
 
 DEFAULTS = {"api_key": "", "steam_id64": "", "steam_username": ""}
 
 
-def base_dir():
-    """Folder the packaged exe lives in, or the repo root when run from source."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 def _config_path():
-    return os.path.join(base_dir(), "steam_config.json")
+    return os.path.join(files_dir(), "steam_config.json")
 
 
 def load():
     path = _config_path()
-    legacy = os.path.join(base_dir(), "config.json")  # the standalone harvester's name for it
+    legacy = os.path.join(app_dir(), "config.json")  # the old standalone harvester's settings
     if not os.path.exists(path) and os.path.exists(legacy):
         path = legacy
     if os.path.exists(path):

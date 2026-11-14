@@ -28,3 +28,6 @@ DepotDownloader-LICENSE.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Files Lore writes when run from source
+lore_files/

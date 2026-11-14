@@ -22,7 +22,8 @@ from pathlib import Path
 
 from . import __version__
 from .epic_gog import (GOG, STORES, Epic, cmd_auth, cmd_collect, cmd_export, cmd_list, cmd_stats,
-                       default_db, open_db)
+                       default_db, default_manifest_dir, open_db)
+from .paths import files_dir, move_old_files
 
 
 def run_steam(args=None):
@@ -68,7 +69,8 @@ def _choose_platforms():
 
 def _ns(db, **kw):
     base = dict(db=db, platforms=["Windows"], limit=None, only=None, delay=1.0,
-                manifest_dir="manifests", include_third_party=False, gog_builds="latest", store="epic")
+                manifest_dir=default_manifest_dir(), include_third_party=False, gog_builds="latest",
+                store="epic")
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -123,20 +125,26 @@ def _clear_menu(db):
         else:
             print("  Not logged in.")
     elif c == "5":
-        shutil.rmtree(Path("manifests") / "gog" / "depots", ignore_errors=True)
+        shutil.rmtree(Path(default_manifest_dir()) / "gog" / "depots", ignore_errors=True)
         print("  GOG depot cache cleared.")
     elif c == "6":
         print("  This deletes ALL collected Epic/GOG hashes, build history and saved manifests.")
         if _ask("  Type DELETE to confirm") == "DELETE":
             if Path(db).exists():
                 Path(db).unlink()
-            shutil.rmtree("manifests", ignore_errors=True)
+            shutil.rmtree(default_manifest_dir(), ignore_errors=True)
             for cl in (Epic(), GOG()):
                 if cl.token_file.exists():
                     cl.token_file.unlink()
             print("  Everything cleared.")
         else:
             print("  Cancelled.")
+
+
+def _export_menu(db):
+    store = _choose_store(allow_all=True)
+    name = f"{store}_hashes_{datetime.now():%Y%m%d}.csv".replace("all_", "epic_gog_")
+    cmd_export(_ns(db, store=store, out=_ask("  Output file", str(files_dir() / name))))
 
 
 def interactive(db):
@@ -147,9 +155,7 @@ def interactive(db):
             db, store=s, platforms=_choose_platforms() if s == "epic" else ["Windows"])))(_choose_store())),
         "4": ("Epic/GOG - collect hashes", lambda: _collect_menu(db)),
         "5": ("Epic/GOG - stats", lambda: cmd_stats(_ns(db))),
-        "6": ("Epic/GOG - export CSV", lambda: (lambda s: cmd_export(_ns(
-            db, store=s, out=_ask("  Output file", f"{s}_hashes_{datetime.now():%Y%m%d}.csv"
-                                  .replace("all_", "epic_gog_")))))(_choose_store(allow_all=True))),
+        "6": ("Epic/GOG - export CSV", lambda: _export_menu(db)),
         "7": ("Epic/GOG - clear cache", lambda: _clear_menu(db)),
     }
     while True:
@@ -183,8 +189,8 @@ def interactive(db):
 # --------------------------------------------------------------------------- command line
 
 def _utf8_output():
-    """Game titles aren't ASCII-safe; without this, redirected output or a legacy console
-    codepage (cp1252) crashes on the first title containing e.g. a Greek letter."""
+    """Print as UTF-8. Otherwise redirected output or a cp1252 console crashes on game titles
+    with characters like Greek letters."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -194,10 +200,11 @@ def _utf8_output():
 
 def main():
     _utf8_output()
+    move_old_files()
     ap = argparse.ArgumentParser(prog="lore", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"lore {__version__}")
-    ap.add_argument("--db", default=None, help="Epic/GOG database path (default: ./lore.sqlite)")
+    ap.add_argument("--db", default=None, help="Epic/GOG database path (default: lore_files/lore.sqlite)")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--db", default=argparse.SUPPRESS, help="Epic/GOG database path")
     sub = ap.add_subparsers(dest="cmd")
@@ -222,7 +229,7 @@ def main():
     s.add_argument("--limit", type=int, help="first N titles per store (testing)")
     s.add_argument("--only", nargs="+", help="specific app name(s) / GOG product ID(s)")
     s.add_argument("--delay", type=float, default=1.0, help="seconds between API requests (default 1)")
-    s.add_argument("--manifest-dir", default="manifests")
+    s.add_argument("--manifest-dir", default=default_manifest_dir())
     s.add_argument("--include-third-party", action="store_true", help="Epic: try Ubisoft/EA titles too")
     s.set_defaults(func=cmd_collect)
 

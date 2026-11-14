@@ -1,5 +1,5 @@
-"""Parses the human-readable dump DepotDownloader writes for `-manifest-only` runs. Format
-(verified against real output from SteamRE/DepotDownloader's ContentDownloader.DumpManifestToTextFile):
+"""Parses the text file DepotDownloader writes for `-manifest-only` runs. Format (checked
+against real DepotDownloader output):
 
     Content Manifest for Depot 228990
 

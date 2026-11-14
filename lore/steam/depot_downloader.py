@@ -1,14 +1,10 @@
-"""Shells out to a built DepotDownloader.exe (embedded in the packaged exe, or built from source
-into tools/DepotDownloader/publish by build.ps1 when running from source). We don't link against it as a
-library — it's GPL-2.0 licensed and isn't published as one anyway — so the CLI is the integration
-surface, same approach as the original C# prototype. See the README's licensing note.
+"""Runs DepotDownloader.exe as a separate process. It's embedded in the packaged exe, or built
+into tools/DepotDownloader/publish by build.ps1 when running from source. It's GPL-2.0 and not a
+library, so we only use its command line (see the README's licensing note).
 
-QR-code login only — no password/2FA/email-code path. That's what let _run_interactive below stay
-plain line-buffered: the only prompts DepotDownloader ever sends without a trailing newline
-(Console.Write, blocking on Console.ReadLine — see Program.cs/Steam3Session.cs) are the
-username/password and 2FA/email-code prompts this tool no longer uses. The QR code itself renders
-via Console.WriteLine (confirmed in Steam3Session.cs's DisplayQrCode) — it and everything else
-this tool actually sends terminates its lines normally.
+Login is QR code only. That keeps output reading line by line: the only DepotDownloader prompts
+without a trailing newline are the password and 2FA prompts, which QR login never shows. The QR
+code itself is printed with Console.WriteLine.
 """
 
 import ctypes
@@ -22,45 +18,36 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _console_encoding():
-    """.NET's Console class writes redirected output using the OS's OEM/DOS codepage, not UTF-8
-    — confirmed by capturing DepotDownloader's raw QR-code bytes: the block characters come
-    through as 0xDB, CP437's single-byte "full block" glyph, which decoding as UTF-8 mangles into
-    a run of replacement characters. Query the real OEM codepage via Windows rather than
-    hardcoding cp437, since it varies by locale."""
+    """.NET writes redirected console output in the OEM codepage, not UTF-8 (the QR code's
+    block character arrives as 0xDB in cp437). The OEM codepage varies by locale, so ask
+    Windows for it."""
     try:
         return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
     except (AttributeError, OSError):
-        return "cp437"  # non-Windows/no ctypes fallback — shouldn't happen, this tool is Windows-only
+        return "cp437"  # not on Windows; shouldn't happen
 
 
 _ENCODING = _console_encoding()
 
-# DepotDownloader's CLI hard-requires -app on every invocation (Program.cs exits immediately with
-# "Error: -app not specified!" otherwise) — there's no dedicated "just log in" mode. So the login
-# step "primes" a session against Valve's public SDK example app (480, Spacewar; free for every
-# account, no purchase needed) with -manifest-only so nothing is actually downloaded. The real
-# point is just completing the login handshake so -remember-password has something to cache for
-# every later scan_app call against the account's real games.
+# DepotDownloader always needs -app and has no login-only mode. Login uses app 480 (Spacewar,
+# Valve's free example app) with -manifest-only, so nothing is downloaded. It just completes the
+# login so -remember-password can cache the session for later scan_app calls.
 _LOGIN_PRIMING_APP_ID = 480
 
 
 def find_exe():
-    """Looks for DepotDownloader in order: bundled inside this PyInstaller onefile exe (see
-    build.ps1's --add-binary — this is what makes the whole tool a single file to hand out),
-    then next to this program as a sibling folder (older packaging convention, still supported),
-    then the dev-time layout (tools/DepotDownloader/publish*) by walking up from here. Covers
-    packaged single-exe, packaged folder-style, and running from source in this repo."""
+    """Finds DepotDownloader.exe. Checks, in order: inside the packaged exe, a DepotDownloader
+    folder next to the program (older packaging), then tools/DepotDownloader/publish* in this or
+    a parent folder (running from source). Returns None if not found."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        # PyInstaller onefile re-extracts its whole bundle — including anything added via
-        # --add-binary — to a fresh temp dir every launch, valid for this process's lifetime.
-        # No need to copy it anywhere further; just run it from there.
+        # PyInstaller extracts the bundle to a temp folder that lasts as long as this process.
         bundled = os.path.join(sys._MEIPASS, "DepotDownloader", "DepotDownloader.exe")
         if os.path.exists(bundled):
             return bundled
 
-    from . import config
+    from ..paths import app_dir
 
-    base = config.base_dir()
+    base = str(app_dir())
     candidates = [os.path.join(base, "DepotDownloader", "DepotDownloader.exe")]
 
     d = base
@@ -79,16 +66,14 @@ def find_exe():
 
 
 def ensure_license_extracted():
-    """Writes DepotDownloader's LICENSE (GPL-2.0) out next to this program if it isn't there
-    already. Only meaningful for the single-exe build, where nothing else ships alongside it —
-    the license would otherwise be locked inside PyInstaller's ephemeral per-run temp dir and
-    never actually reach whoever the exe gets sent to. Idempotent/cheap; safe to call every launch.
-    """
+    """Copies DepotDownloader's GPL-2.0 LICENSE into lore_files if it isn't there yet. Only
+    applies to the packaged exe, where it would otherwise stay inside the temp folder. Safe to
+    call on every launch."""
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
-    from . import config
+    from ..paths import files_dir
 
-    dest = os.path.join(config.base_dir(), "DepotDownloader-LICENSE.txt")
+    dest = os.path.join(files_dir(), "DepotDownloader-LICENSE.txt")
     if os.path.exists(dest):
         return
     bundled = os.path.join(sys._MEIPASS, "DepotDownloader", "LICENSE")
@@ -97,10 +82,8 @@ def ensure_license_extracted():
 
 
 def _run_interactive(exe_path, args, on_line):
-    """Runs DepotDownloader, reading its output line-by-line and calling on_line(str) with each
-    complete line as it arrives (for display/logging). Blocking — call this from a background
-    thread if the caller needs to stay responsive; the CLI's own main loop just calls it directly.
-    """
+    """Runs DepotDownloader and calls on_line(str) for each output line as it arrives. Blocks
+    until it exits and returns the exit code."""
     proc = subprocess.Popen(
         [exe_path, *args],
         stdout=subprocess.PIPE,
@@ -118,14 +101,11 @@ def _run_interactive(exe_path, args, on_line):
 
 
 def login_qr(exe_path, on_line):
-    """QR-code login: no password ever typed into this tool or DepotDownloader — -qr skips
-    straight past the password prompt and the mobile-app approval doubles as 2FA.
-    -remember-password caches the resulting session for every later non-interactive call.
+    """QR code login. No password is typed; approving in the Steam mobile app also covers 2FA.
+    -remember-password caches the session for later scan_app calls.
 
-    Note: DepotDownloader rejects -qr combined with -username (hard CLI error), so this
-    deliberately omits it — the account name is only known *after* the scan resolves it, which is
-    why the caller asks for it afterward and passes it explicitly to scan_app for every later call.
-    """
+    DepotDownloader rejects -qr together with -username, so no username is passed here. The
+    caller asks the user for it after login and passes it to scan_app."""
     args = [
         "-app", str(_LOGIN_PRIMING_APP_ID), "-manifest-only",
         "-qr", "-remember-password", "-loginid", str(os.getpid() % 2_000_000_000),
@@ -133,29 +113,25 @@ def login_qr(exe_path, on_line):
     return _run_interactive(exe_path, args, on_line)
 
 
-# Steam's EResult codes for temporary/permanent throttling. DepotDownloader has no special
-# handling for either — they just show up inline in its generic "result: {EResult}" lines (e.g.
-# "Got depot key for 481 result: RateLimitExceeded"), since C# renders an enum as its member name.
+# Steam's rate-limit EResult codes. DepotDownloader doesn't handle them specially; they show up
+# in its normal output, e.g. "Got depot key for 481 result: RateLimitExceeded".
 _RATE_LIMIT_MARKERS = ("RateLimitExceeded", "LimitExceeded")
 
 
 def is_rate_limited(lines):
-    """True if any captured output line from a scan_app call mentions one of Steam's rate-limit
-    EResult codes. Used by the scan loop to back off and retry instead of treating a throttled
-    app the same as a genuinely unowned/unavailable one."""
+    """True if any output line mentions a rate-limit code, so the caller can wait and retry
+    rather than treat the app as unavailable."""
     return any(marker in line for line in lines for marker in _RATE_LIMIT_MARKERS)
 
 
-# ContentDownloader.cs prints this verbatim (Console.WriteLine("Depot {0} is not available from
-# this account.", depotId)) when PICS lists a depot for the app but this account's license
-# doesn't cover it — e.g. a DLC-gated or region-restricted depot. The app's overall scan can
-# still exit 0 with that depot simply missing from the output, so without parsing this line such
-# a depot would be entirely invisible to us: not pulled, and not even known to exist.
+# Printed by DepotDownloader when the app has a depot this account's licence doesn't cover (e.g.
+# DLC or region locked). The scan still exits 0 with that depot left out, so this line is the
+# only sign it exists.
 _DENIED_DEPOT_RE = re.compile(r"Depot (\d+) is not available from this account\.")
 
 
 def denied_depot_ids(lines):
-    """Depot IDs DepotDownloader reported as denied to this account during a scan_app call."""
+    """Depot IDs reported as not available to this account."""
     ids = set()
     for line in lines:
         m = _DENIED_DEPOT_RE.search(line)
@@ -165,19 +141,12 @@ def denied_depot_ids(lines):
 
 
 def scan_app(exe_path, appid, username, output_dir, on_line, depot_ids=None):
-    """Runs `-app {appid} -manifest-only`, which by default auto-enumerates every depot for that
-    app (filtered to Windows) — the only way to discover a depot we've never seen before — and
-    writes one manifest_{depotId}_{manifestId}.txt per depot into output_dir. No game content is
-    downloaded either way.
+    """Runs `-app {appid} -manifest-only` for Windows depots, writing one
+    manifest_{depotId}_{manifestId}.txt per depot into output_dir. No game files are downloaded.
 
-    depot_ids, when given, adds `-depot <id> <id> ...` — DepotDownloader's CLI accepts a
-    space-separated list after a single -depot flag (see Program.cs's GetParameterList), which
-    restricts this call to exactly those depot IDs instead of asking it to enumerate the app's
-    full depot list itself. Each one still resolves to whatever its *current* manifest is (we
-    never pin an old one). This is the "fill in what's missing" fast path: it can't discover a
-    depot outside the given list, but for a game with many depots where only a couple are still
-    unpulled, it skips re-querying the ones we already have — one login either way, less work
-    per depot. Returns (exit_code, [manifest file paths])."""
+    By default it covers every depot of the app, which is how new depots are found. With
+    depot_ids it only fetches those (current manifest of each), which is quicker when just a few
+    are missing. Returns (exit_code, [manifest file paths])."""
     os.makedirs(output_dir, exist_ok=True)
     args = [
         "-app", str(appid), "-manifest-only", "-remember-password",

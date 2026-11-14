@@ -39,6 +39,7 @@ except ImportError:
         AES = None
 
 from . import __version__ as VERSION
+from .paths import files_dir
 STORES = ("epic", "gog")
 
 # Login sessions. Copies over sessions from the older game_hashes / epic_hashes tools once.
@@ -59,10 +60,15 @@ LEGACY_DBS = ("game_hashes.sqlite", "epic_hashes.sqlite")  # older tools' databa
 
 
 def default_db():
-    """lore.sqlite, unless only a database from the older tools is here."""
-    if Path(DEFAULT_DB).exists():
-        return DEFAULT_DB
-    return next((p for p in LEGACY_DBS if Path(p).exists()), DEFAULT_DB)
+    """lore_files/lore.sqlite, unless only a database from the older tools is there."""
+    d = files_dir()
+    if (d / DEFAULT_DB).exists():
+        return str(d / DEFAULT_DB)
+    return str(next((d / p for p in LEGACY_DBS if (d / p).exists()), d / DEFAULT_DB))
+
+
+def default_manifest_dir():
+    return str(files_dir() / "manifests")
 
 
 def utcnow():
@@ -562,7 +568,7 @@ CREATE TABLE IF NOT EXISTS catalog (
 CREATE TABLE IF NOT EXISTS errors (app_name TEXT, platform TEXT, error TEXT, when_utc TEXT);
 """
 
-# Columns added in v2.0 - applied to older databases automatically.
+# Columns added since the first schema. open_db adds any that an older database is missing.
 MIGRATIONS = [
     ("builds", "store", "TEXT DEFAULT 'epic'"),
     ("builds", "store_build_id", "TEXT"),

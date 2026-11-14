@@ -1,5 +1,4 @@
-"""Thin wrappers over the two Steam Web API calls this tool needs. Stdlib-only (urllib) so the
-packaged exe has zero extra runtime dependencies beyond Python itself.
+"""The two Steam Web API calls Lore needs. Uses urllib only, so no extra dependencies.
 """
 
 import json

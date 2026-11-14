@@ -37,6 +37,7 @@ Copy-Item (Join-Path $ddSrc "LICENSE") (Join-Path $ddPublish "LICENSE") -Force -
 
 Write-Host "Building lore.exe..."
 python -m PyInstaller --noconfirm --clean --onefile --console --name lore `
+    --icon (Join-Path $here "assets\lore.ico") `
     --hidden-import Cryptodome.Cipher.AES `
     --add-binary "$(Join-Path $ddPublish 'DepotDownloader.exe');DepotDownloader" `
     --add-data "$(Join-Path $ddPublish 'LICENSE');DepotDownloader" `

@@ -1,16 +1,10 @@
-"""Steam support: the start-to-finish harvest flow. Runs start-to-finish in the
-main thread — no server, no background threads, no browser UI: QR-login, fetch the library, pull
-depot manifests game by game with live progress, export a CSV, optionally open the submission
-form. Flow order deliberately matches how a coworker would actually want to move through this:
-log in first (that's the slow/scary-looking step, get it out of the way), then everything else is
-just waiting and pressing Enter.
+"""The Steam run: QR login, fetch the library, pull depot manifests game by game, export a CSV,
+then offer the submission form. Login comes first so the rest is just waiting.
 
-Everything printed to the console also gets written, with more detail, to a timestamped log file
-next to this program — see setup_logging(). During login, DepotDownloader's own output (including
-the QR code itself) shows on the console live — there's little of it and all of it matters. During
-the scan loop, by contrast, it's hundreds of lines per game and would bury the progress counter in
-scroll, so there it goes to the log file only (DEBUG) and the console just gets a one-line
-OK/SKIP/ERROR per game.
+Console output also goes to a timestamped log file in lore_files (see setup_logging). During
+login DepotDownloader's output, including the QR code, is shown live. During the scan it's
+hundreds of lines per game, so it goes to the log only and the console shows one OK/SKIP/ERROR
+line per game.
 """
 
 import datetime
@@ -21,18 +15,16 @@ import time
 import webbrowser
 
 from .. import __version__
+from ..paths import files_dir
 from . import config, db, depot_downloader, manifest_parser, steam_api
 
 APP_TITLE = "Lore - Steam"
 SUBMISSION_FORM_URL = "https://forms.gle/4WBn3drZLu5fmNrY8"
 API_KEY_PAGE_URL = "https://steamcommunity.com/dev/apikey"
 
-# Flat 20-minute wait on every retry, no escalation — the original 15min/45min/60min escalating
-# version (inherited from the original GUI prototype) ramped up too aggressively in practice: 15min
-# often wasn't enough to clear the limit, and jumping straight to 45min+ after that was excessive.
-# _RATE_LIMIT_BACKOFF_MULTIPLIER is 1 (not a typo) specifically to keep every retry at the same
-# 20 minutes rather than growing; _RATE_LIMIT_MAX_BACKOFF is just a safety cap, unreachable at
-# that multiplier.
+# Rate limits: wait a flat 20 minutes before each retry. Shorter waits often weren't enough and
+# longer ones were excessive. The multiplier is 1 on purpose so the wait doesn't grow; the max is
+# just a cap.
 _RATE_LIMIT_INITIAL_BACKOFF = 1200
 _RATE_LIMIT_BACKOFF_MULTIPLIER = 1
 _RATE_LIMIT_MAX_BACKOFF = 1200
@@ -43,15 +35,9 @@ log = logging.getLogger("harvester")
 
 
 def _configure_console_encoding():
-    """Windows consoles default to a legacy codepage (often cp1252) for Python's stdout/stderr —
-    fine for plain text, but it can't encode the QR code's Unicode block characters (█, U+2588)
-    that DepotDownloader's captured output decodes to (see depot_downloader.py's
-    _console_encoding — that handles *decoding* DepotDownloader's own OEM-codepage bytes
-    correctly; this is the separate matter of *re-encoding* that already-correct text back out
-    to our own console). Without this, relaying the QR code to the console crashes mid-login.
-    Force UTF-8 at both the OS console level and in Python's stream wrapping, with "replace" as a
-    last-resort fallback so an unusual terminal shows a replacement glyph instead of crashing.
-    """
+    """Switches the console and Python's streams to UTF-8. The Windows default codepage (often
+    cp1252) can't print the QR code's block characters (U+2588), which would crash login.
+    Unprintable characters are replaced rather than raising."""
     try:
         import ctypes
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
@@ -68,9 +54,9 @@ def _configure_console_encoding():
 
 def setup_logging():
     _configure_console_encoding()
-    log_path = os.path.join(config.base_dir(), f"steam_log_{datetime.datetime.now():%Y%m%d_%H%M%S}.txt")
+    log_path = os.path.join(files_dir(), f"steam_log_{datetime.datetime.now():%Y%m%d_%H%M%S}.txt")
     log.setLevel(logging.DEBUG)
-    for h in list(log.handlers):  # running Steam twice from the menu shouldn't double up handlers
+    for h in list(log.handlers):  # avoid duplicate handlers if Steam is run twice from the menu
         h.close()
         log.removeHandler(h)
 
@@ -126,19 +112,15 @@ def step_login(cfg):
 
         def on_line(line, captured=captured):
             captured.append(line)
-            # info, not debug: unlike the scan loop (hundreds of lines per game — real clutter if
-            # shown live), this is the QR code itself plus a couple of status lines. That's
-            # exactly what needs to be on screen right now, not relegated to the log file only.
+            # info, not debug: this is the QR code and a few status lines, so show it live.
             log.info(line)
 
         exit_code = depot_downloader.login_qr(exe_path, on_line=on_line)
         if exit_code == 0:
             break
 
-        # The QR approval itself can succeed (DepotDownloader even prints the account name at
-        # that point) and *then* get rate-limited finishing the login handshake — same Steam
-        # throttling the scan loop hits, so it gets the same flat-20min backoff instead of
-        # immediately offering to retry, which would likely just hit the same limit again.
+        # The QR approval can succeed and the rest of the login still get rate limited. Wait the
+        # same 20 minutes as the scan does; retrying straight away would hit the limit again.
         if depot_downloader.is_rate_limited(captured) and retries < _RATE_LIMIT_MAX_RETRIES:
             retries += 1
             log.info(f"\nSteam rate-limited this login attempt ({retries}/{_RATE_LIMIT_MAX_RETRIES}).")
@@ -177,7 +159,7 @@ def step_fetch_games(cfg):
         except steam_api.SteamApiError as ex:
             log.info(f"That didn't work: {ex}")
             log.debug("Fetching games failed", exc_info=True)
-            cfg = {}  # don't keep re-offering bad cached values as the default
+            cfg = {}  # don't offer the bad values as defaults again
             continue
         config.save({"api_key": api_key, "steam_id64": steam_id})
         log.info(f"Found {len(games)} games.")
@@ -186,11 +168,9 @@ def step_fetch_games(cfg):
 
 # ---------------------------------------------------------------------- step: decide what to scan
 def _games_needing_scan(harvester, games):
-    """Combines what used to be separate "new games only" / "fill in missing depots" modes into
-    one pass: a game never touched before gets full discovery, one that's partially covered (some
-    depot came back no_access, or a prior run was interrupted) gets just its missing depots
-    re-asked for. Nothing to pick between — the CLI doesn't ask, it just does whatever's needed to
-    get everything fully covered."""
+    """Works out what to scan. New games get a full scan. Partly covered games (a depot came back
+    no_access, or an earlier run was interrupted) only ask for their missing depots. Fully
+    covered games are skipped. Returns (to_scan, depot_ids_by_appid, scanned_before)."""
     overview = {g["appid"]: g for g in harvester.games_overview()}
     scanned_before = {appid for appid, g in overview.items() if g["pulled_depot_count"] > 0}
     to_scan = []
@@ -232,8 +212,8 @@ def _cleanup_dir(path):
 
 
 def _rate_limit_countdown(seconds, what):
-    """what: a phrase describing what's being retried, quoted by the caller if it's a proper
-    name (e.g. "'Half-Life'") or left plain otherwise (e.g. "login")."""
+    """Waits `seconds` with a countdown. what: what's being retried, e.g. "'Half-Life'" or
+    "login"."""
     log.info(f"  Rate limited by Steam — waiting {seconds // 60}m{seconds % 60:02d}s before retrying "
               f"{what}...")
     remaining = seconds
@@ -320,7 +300,7 @@ def step_scan(exe_path, username, db_path, scratch_dir, games):
                         rate_limit_retries[appid] = retries + 1
                         _rate_limit_countdown(backoff, f"'{name}'")
                         backoff = min(backoff * _RATE_LIMIT_BACKOFF_MULTIPLIER, _RATE_LIMIT_MAX_BACKOFF)
-                        continue  # retry the same game — don't advance i
+                        continue  # retry the same game (i not advanced)
                     failures.append((appid, name, f"still rate limited after {_RATE_LIMIT_MAX_RETRIES} "
                                                    "retries — run this again later to pick it up"))
                     log.info("  [SKIP] still rate limited after several retries — will pick this up "
@@ -373,7 +353,7 @@ def step_export(db_path):
     harvester = db.HarvesterDb(db_path)
     try:
         filename = f"hashes_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
-        out_path = os.path.join(config.base_dir(), filename)
+        out_path = os.path.join(files_dir(), filename)
         count = harvester.export_csv(out_path)
     finally:
         harvester.close()
@@ -394,12 +374,12 @@ def run():
     print(f"Log file: {log_path}\n")
 
     cfg = config.load()
-    db_path = os.path.join(config.base_dir(), "hashharvester.db")
-    scratch_dir = os.path.join(config.base_dir(), "manifests-scratch")
+    db_path = os.path.join(files_dir(), "hashharvester.db")
+    scratch_dir = os.path.join(files_dir(), "manifests-scratch")
 
     try:
         exe_path, username = step_login(cfg)
-        cfg = config.load()  # pick up the username step_login may have just saved
+        cfg = config.load()  # step_login may have just saved the username
         games = step_fetch_games(cfg)
         step_scan(exe_path, username, db_path, scratch_dir, games)
         out_path = step_export(db_path)
@@ -414,7 +394,7 @@ def run():
     except KeyboardInterrupt:
         log.info("\n\nCancelled.")
         sys.exit(1)
-    except Exception as ex:  # noqa: BLE001 - last resort so a packaged build never dies silently
+    except Exception as ex:  # noqa: BLE001 - so the packaged exe never closes without a message
         log.debug("Unhandled error", exc_info=True)
         print(f"\nSomething went wrong: {ex}")
         print(f"Full details were written to the log file: {log_path}")

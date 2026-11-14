@@ -1,6 +1,5 @@
-"""SQLite storage — mirrors the schema from the original C# prototype. One row per (hash,
-filename) sighting rather than deduping at insert time, since the same SHA1 legitimately shows up
-under different filenames/games (shared DLLs, redistributables); dedup happens at export time.
+"""SQLite storage for Steam. One row per (hash, filename) sighting, with no deduplication: the
+same SHA1 can appear under different file names and games (shared DLLs, redistributables).
 """
 
 import csv
@@ -47,11 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_hash_sightings_sha1 ON hash_sightings(sha1);
 CREATE INDEX IF NOT EXISTS idx_depots_appid ON depots(appid);
 """
 
-# One row per raw hash_sighting, not collapsed by sha1 — a hash that shows up in two different
-# games/files within this library exports as two full rows rather than one "sample" row with a
-# count, so nothing about where a hash was actually seen gets thrown away before it leaves this
-# machine. (Earlier versions grouped by sha1 here; that meant only one of a hash's placements
-# survived into the CSV, which the Hash Collector app has no way to recover from downstream.)
+# One row per sighting, not grouped by sha1. A hash seen in two games or files exports as two
+# rows, so every place it was seen reaches the CSV.
 _EXPORT_QUERY = """
     SELECT
         hs.sha1,
@@ -75,10 +71,8 @@ class HarvesterDb:
         self.conn.commit()
 
     def _migrate(self):
-        """Additive schema changes for databases created before a column existed — SQLite's
-        CREATE TABLE IF NOT EXISTS never adds a column to a table that already exists, so
-        anything added after the first release needs an explicit ALTER TABLE here, guarded
-        against having already been applied."""
+        """Adds columns missing from older databases. CREATE TABLE IF NOT EXISTS won't add
+        columns to an existing table, so each new column needs a guarded ALTER TABLE here."""
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(depots)").fetchall()}
         if "status" not in columns:
             self.conn.execute("ALTER TABLE depots ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'")
@@ -106,13 +100,10 @@ class HarvesterDb:
         return cur.fetchone() is not None
 
     def mark_depot_unavailable(self, depot_id, appid):
-        """Records a depot we now know exists for this game but which DepotDownloader reported
-        as "not available from this account" during a scan — typically a license/DLC-gated
-        depot. Without this, such a depot would be invisible to us: not pulled, and not even
-        known to exist, so it couldn't be counted as "still needs pulling" either. Never
-        downgrades a depot that already has real manifest data on record — a denial on some
-        later run (e.g. a transient hiccup) shouldn't erase that we did successfully pull it
-        before."""
+        """Records a depot DepotDownloader reported as "not available from this account"
+        (usually DLC or licence gated), so it's known to exist even though it wasn't pulled.
+        Does nothing if the depot already has manifest data, so a one-off denial doesn't
+        overwrite a good earlier pull."""
         if self.has_any_manifest_run(depot_id):
             return
         self.conn.execute(
@@ -121,6 +112,27 @@ class HarvesterDb:
             (depot_id, appid),
         )
         self.conn.commit()
+
+    def games_overview(self):
+        """One dict per game: appid, depot_count, and pulled_depot_count (depots with at least
+        one manifest run)."""
+        cur = self.conn.execute(
+            "SELECT g.appid, COUNT(d.depot_id), "
+            "COUNT(CASE WHEN EXISTS (SELECT 1 FROM manifest_runs mr WHERE mr.depot_id = d.depot_id) "
+            "THEN 1 END) "
+            "FROM games g LEFT JOIN depots d ON d.appid = g.appid GROUP BY g.appid"
+        )
+        return [{"appid": a, "depot_count": n, "pulled_depot_count": p} for a, n, p in cur]
+
+    def missing_depot_ids(self, appid):
+        """Depots of this game with no manifest run yet, including no_access ones (access can
+        change, e.g. after buying DLC)."""
+        cur = self.conn.execute(
+            "SELECT depot_id FROM depots d WHERE appid = ? AND NOT EXISTS "
+            "(SELECT 1 FROM manifest_runs mr WHERE mr.depot_id = d.depot_id) ORDER BY depot_id",
+            (appid,),
+        )
+        return [row[0] for row in cur]
 
     def has_manifest_run(self, depot_id, manifest_id):
         cur = self.conn.execute(
@@ -158,8 +170,7 @@ class HarvesterDb:
         }
 
     def export_rows(self):
-        """Yields (sha1, size, filename, appid, game) for every raw sighting, sorted by sha1 —
-        the data behind export_csv()."""
+        """Yields (sha1, size, filename, appid, game) for every sighting, sorted by sha1."""
         cur = self.conn.execute(_EXPORT_QUERY)
         while True:
             chunk = cur.fetchmany(5000)

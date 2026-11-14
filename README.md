@@ -39,8 +39,8 @@ One guided run:
 3. **Scan.** It confirms first, then works through your games with an `[x/total]` counter,
    roughly 10-20 seconds per game. If Steam rate-limits a request, it waits 20 minutes and retries
    on its own.
-4. **Export.** It writes `hashes_<timestamp>.csv` next to the exe and offers to open the
-   submission form.
+4. **Export.** It writes `hashes_<timestamp>.csv` to the `lore_files` folder and offers to open
+   the submission form.
 
 You can close it at any point. Nothing is lost: games already scanned are skipped next time,
 and partly scanned games only fetch their missing depots.
@@ -68,15 +68,18 @@ lore --version
 
 ### Where things are saved
 
+Everything Lore writes goes in a `lore_files` folder next to the exe, apart from logins.
+
 | What | Where |
 |---|---|
-| Epic/GOG hashes | `lore.sqlite` and `manifests/` in the current folder (next to the exe when double-clicked) |
+| Epic/GOG hashes | `lore_files\lore.sqlite` and `lore_files\manifests\` |
 | Epic/GOG logins | `%USERPROFILE%\.lore\` (treat these like passwords) |
-| Steam settings, hashes, logs | `steam_config.json`, `hashharvester.db`, `steam_log_*.txt` next to the exe |
-| Exports | `hashes_*.csv` (Steam), `epic_hashes_*.csv` / `gog_hashes_*.csv` (Epic/GOG) |
+| Steam settings, hashes, logs | `steam_config.json`, `hashharvester.db`, `steam_log_*.txt` in `lore_files` |
+| Exports | `hashes_*.csv` (Steam), `epic_hashes_*.csv` / `gog_hashes_*.csv` (Epic/GOG) in `lore_files` |
 
-Data from the older standalone tools (`game_hashes`, `epic_hashes`, `hashharvester`) is picked up
-automatically: drop `lore.exe` in the same folder.
+Data from older versions and the older standalone tools (`game_hashes`, `epic_hashes`,
+`hashharvester`) is picked up automatically: drop `lore.exe` in the same folder and it moves the
+data into `lore_files` on first run.
 
 ## Development
 
@@ -95,10 +98,13 @@ self-contained exe and embeds it in `lore.exe`. To move to a newer DepotDownload
 ```
 lore/
   app.py            menu and command line
+  paths.py          where files are kept (lore_files)
   epic_gog.py       Epic + GOG: auth, library, manifest parsing, SQLite
   steam/
     cli.py          the Steam run: login, fetch, scan, export
     depot_downloader.py, manifest_parser.py, steam_api.py, db.py, config.py
+assets/
+  lore.ico          exe icon (redraw with `python assets/make_icon.py`)
 ```
 
 ### Releases
