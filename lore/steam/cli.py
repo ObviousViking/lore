@@ -97,12 +97,12 @@ def _confirm(text, default_yes=True):
 def step_login(cfg):
     log.info("=== Logging into Steam ===")
     log.info("Scan the QR code below with the Steam mobile app and approve the login.")
-    log.info("(No password is ever typed into this tool.)\n")
+    log.info("You won't be asked for your password.\n")
 
     exe_path = depot_downloader.find_exe()
     if not exe_path:
-        log.info("Couldn't find DepotDownloader.exe — this build is missing a required file.")
-        log.info("See the README's maintainer setup section if you're running this from source.")
+        log.info("DepotDownloader.exe not found. This build is missing a file.")
+        log.info("From source, run build.ps1 once first (see Development in the README).")
         sys.exit(1)
     depot_downloader.ensure_license_extracted()
 
@@ -123,25 +123,24 @@ def step_login(cfg):
         # same 20 minutes as the scan does; retrying straight away would hit the limit again.
         if depot_downloader.is_rate_limited(captured) and retries < _RATE_LIMIT_MAX_RETRIES:
             retries += 1
-            log.info(f"\nSteam rate-limited this login attempt ({retries}/{_RATE_LIMIT_MAX_RETRIES}).")
+            log.info(f"\nSteam rate limited the login ({retries}/{_RATE_LIMIT_MAX_RETRIES}).")
             _rate_limit_countdown(_RATE_LIMIT_INITIAL_BACKOFF, "login")
             log.info("")
             continue
 
-        log.info(f"\nLogin didn't complete (DepotDownloader exited with code {exit_code}).")
+        log.info(f"\nLogin failed (DepotDownloader exit code {exit_code}).")
         if not _confirm("Try again?"):
             sys.exit(1)
         log.info("")
 
     username = cfg.get("steam_username")
     if not username:
-        log.info("\nLogin succeeded!")
+        log.info("\nLogged in.")
         while not username:
-            username = input("What's your Steam login username? (the one you just used — "
-                              "not your display name): ").strip()
+            username = input("Steam login username (not your display name): ").strip()
         config.save({"steam_username": username})
     else:
-        log.info(f"\nLogin succeeded, as '{username}'.")
+        log.info(f"\nLogged in as {username}.")
 
     return exe_path, username
 
@@ -150,14 +149,14 @@ def step_login(cfg):
 def step_fetch_games(cfg):
     log.info("\n=== Your library ===")
     while True:
-        api_key = _prompt("Steam Web API key (get one free at " + API_KEY_PAGE_URL + ")",
+        api_key = _prompt("Steam Web API key (free from " + API_KEY_PAGE_URL + ")",
                            cfg.get("api_key"), secret_preview=True)
-        profile = _prompt("Your Steam profile URL (or SteamID64)", cfg.get("steam_id64"))
+        profile = _prompt("Steam profile URL or SteamID64", cfg.get("steam_id64"))
         try:
             steam_id = steam_api.resolve_steam_id(profile, api_key)
             games = steam_api.get_owned_games(api_key, steam_id)
         except steam_api.SteamApiError as ex:
-            log.info(f"That didn't work: {ex}")
+            log.info(f"Error: {ex}")
             log.debug("Fetching games failed", exc_info=True)
             cfg = {}  # don't offer the bad values as defaults again
             continue
@@ -214,8 +213,7 @@ def _cleanup_dir(path):
 def _rate_limit_countdown(seconds, what):
     """Waits `seconds` with a countdown. what: what's being retried, e.g. "'Half-Life'" or
     "login"."""
-    log.info(f"  Rate limited by Steam — waiting {seconds // 60}m{seconds % 60:02d}s before retrying "
-              f"{what}...")
+    log.info(f"  Rate limited by Steam. Retrying {what} in {seconds // 60}m{seconds % 60:02d}s...")
     remaining = seconds
     last_update = 0.0
     while remaining > 0:
@@ -235,24 +233,20 @@ def step_scan(exe_path, username, db_path, scratch_dir, games):
         to_scan, depot_ids_by_appid, scanned_before = _games_needing_scan(harvester, games)
 
         if not to_scan:
-            log.info("\nEverything's already fully scanned — nothing new to pull.")
+            log.info("\nAll games already scanned. Nothing to do.")
             return
 
         already = len(games) - len(to_scan)
         log.info(f"\n=== Scanning depots ===")
         if already:
-            log.info(f"{already} game(s) already fully covered from a previous run — skipping those.")
-        log.info(f"Pulling {len(to_scan)} game(s). This only reads file lists (no game content is "
-                  f"downloaded) and can take a while — roughly 10-20s per game, longer if Steam "
-                  f"rate-limits a request (that's normal on a big library, not a bug; it backs off "
-                  f"and retries on its own).")
-        log.info("If you need to stop partway through, just close this window — closing it does "
-                  "stop the scan, nothing keeps running once the window's gone, but nothing's lost "
-                  "either: run this again later and already-scanned games are skipped "
-                  "automatically, picking up only where you left off.\n")
+            log.info(f"Skipping {already} game(s) already scanned.")
+        log.info(f"{len(to_scan)} game(s) to scan, about 10-20 seconds each. Only file lists are "
+                 f"downloaded, not games.")
+        log.info("If Steam rate limits a request, it waits 20 minutes and retries.")
+        log.info("You can close this window at any time. Next run carries on where it stopped.\n")
 
-        if not _confirm("Begin pulling depots?"):
-            log.info("Okay, not scanning. Run this again when you're ready.")
+        if not _confirm("Start scanning?"):
+            log.info("Not scanning.")
             sys.exit(0)
 
         new_runs = 0
@@ -302,9 +296,8 @@ def step_scan(exe_path, username, db_path, scratch_dir, games):
                         backoff = min(backoff * _RATE_LIMIT_BACKOFF_MULTIPLIER, _RATE_LIMIT_MAX_BACKOFF)
                         continue  # retry the same game (i not advanced)
                     failures.append((appid, name, f"still rate limited after {_RATE_LIMIT_MAX_RETRIES} "
-                                                   "retries — run this again later to pick it up"))
-                    log.info("  [SKIP] still rate limited after several retries — will pick this up "
-                             "on the next run")
+                                                   "retries, will retry next run"))
+                    log.info("  [SKIP] still rate limited, will retry next run")
                     rate_limit_retries.pop(appid, None)
                     i += 1
                     continue
@@ -318,7 +311,7 @@ def step_scan(exe_path, username, db_path, scratch_dir, games):
             time.sleep(_INTER_GAME_DELAY)
 
             if not manifest_files:
-                log.info("  [OK] nothing to pull (no depots for this account/platform)")
+                log.info("  [OK] no Windows depots for this account")
                 _cleanup_dir(app_scratch)
                 i += 1
                 continue
@@ -333,11 +326,11 @@ def step_scan(exe_path, username, db_path, scratch_dir, games):
             _cleanup_dir(app_scratch)
             i += 1
 
-        log.info(f"\nScan finished. {new_runs} new manifest run(s) recorded.")
+        log.info(f"\nScan finished. {new_runs} new manifest(s) recorded.")
         if updated_games:
             shown = updated_games[:20]
             more = f" ...and {len(updated_games) - 20} more" if len(updated_games) > 20 else ""
-            log.info(f"New depot data found for {len(updated_games)} game(s) already on record: "
+            log.info(f"New data for {len(updated_games)} previously scanned game(s): "
                      f"{', '.join(shown)}{more}")
         if failures:
             log.info(f"{len(failures)} app(s) skipped:")
@@ -368,9 +361,9 @@ def run():
 
     print(f"{APP_TITLE} {__version__}")
     print("=" * len(APP_TITLE))
-    print("Builds an NSRL-style known-hash set from your Steam library's depot manifests.")
-    print("Nothing is uploaded automatically — this reads file lists only (no game content is")
-    print("downloaded) and writes one CSV for you to submit yourself at the end.")
+    print("Builds a known-file hash set from your Steam library's depot manifests.")
+    print("Only file lists are downloaded, not games. Nothing is uploaded; you submit the CSV")
+    print("yourself at the end.")
     print(f"Log file: {log_path}\n")
 
     cfg = config.load()
@@ -385,17 +378,17 @@ def run():
         out_path = step_export(db_path)
 
         print()
-        if _confirm("Open the submission form to upload your CSV now?"):
+        if _confirm("Open the submission form now?"):
             webbrowser.open(SUBMISSION_FORM_URL)
-            print("Upload this file through the page that just opened:")
+            print("Upload this file on the form:")
             print(f"  {out_path}")
         else:
-            print(f"No problem — that file's waiting whenever you're ready: {out_path}")
+            print(f"CSV saved to: {out_path}")
     except KeyboardInterrupt:
         log.info("\n\nCancelled.")
         sys.exit(1)
     except Exception as ex:  # noqa: BLE001 - so the packaged exe never closes without a message
         log.debug("Unhandled error", exc_info=True)
-        print(f"\nSomething went wrong: {ex}")
-        print(f"Full details were written to the log file: {log_path}")
+        print(f"\nError: {ex}")
+        print(f"Details in the log file: {log_path}")
         sys.exit(1)

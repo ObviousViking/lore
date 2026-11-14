@@ -50,8 +50,8 @@ def resolve_steam_id(raw_input, api_key):
         return resp["steamid"]
 
     raise SteamApiError(
-        f"Couldn't resolve '{raw_input}' to a Steam account. Double-check the profile URL — open "
-        "the Steam app, click your name, click your profile, and copy the URL from the browser."
+        f"Couldn't find a Steam account for '{raw_input}'. Check the profile URL: in Steam, "
+        "click your name, then Profile, and copy the URL."
     )
 
 
@@ -64,9 +64,9 @@ def get_owned_games(api_key, steam_id64):
 
     if not games:
         raise SteamApiError(
-            "GetOwnedGames returned zero games. Common causes: the SteamID doesn't match this API "
-            "key's account and your profile is private, or 'Game details' privacy isn't set to "
-            "Public (Steam > Edit Profile > Privacy Settings)."
+            "Steam returned no games. Usually 'Game details' isn't public (Steam > Edit Profile > "
+            "Privacy Settings), or the profile is private and belongs to a different account "
+            "than the API key."
         )
 
     return [{"appid": g["appid"], "name": g.get("name") or f"App {g['appid']}"} for g in games]

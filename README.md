@@ -104,7 +104,7 @@ lore/
     cli.py          the Steam run: login, fetch, scan, export
     depot_downloader.py, manifest_parser.py, steam_api.py, db.py, config.py
 assets/
-  lore.ico          exe icon (redraw with `python assets/make_icon.py`)
+  lore.ico          exe icon
 ```
 
 ### Releases
