@@ -1,0 +1,8 @@
+# Runtime (bundled into the released exe)
+# pycryptodomex recovers file names from newer encrypted Epic manifests (hashes are collected
+# either way).
+pycryptodomex
+# Console colours, menus and progress bars.
+rich
+# Build
+pyinstaller
